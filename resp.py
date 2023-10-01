@@ -55,6 +55,9 @@ def get_bulk_string_reply(text):
     return "$" + str(len(text)) + CRLF + text + CRLF
 
 
+KV_STORE = {}
+
+
 def construct_reply(cmds):
     resp = ""
     if cmds[0] == "PING":
@@ -62,6 +65,15 @@ def construct_reply(cmds):
             resp = get_simple_string_reply("PONG")
         else:
             resp = get_bulk_string_reply(cmds[1])
+    elif cmds[0] == "SET":
+        key = cmds[1]
+        val = cmds[2]
+        KV_STORE[key] = val
+        resp = get_simple_string_reply("OK")
+    elif cmds[0] == "GET":
+        key = cmds[1]
+        val = KV_STORE.get(key, "nil")
+        resp = get_bulk_string_reply(val)
     return resp
 
 
