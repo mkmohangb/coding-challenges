@@ -1,4 +1,6 @@
 import socket
+import sys
+import threading
 # Redis Serialization Protocol - RESP
 # https://redis.io/docs/reference/protocol-spec/
 # - Simple to implement, fast to parse, human readable
@@ -55,10 +57,14 @@ def get_bulk_string_reply(text):
     return "$" + str(len(text)) + CRLF + text + CRLF
 
 
+def get_empty_array_reply():
+    return "*0" + CRLF
+
+
 KV_STORE = {}
 
 
-def construct_reply(cmds):
+def construct_reply(cmds, lock):
     resp = ""
     if cmds[0] == "PING":
         if len(cmds) == 1:
@@ -68,35 +74,50 @@ def construct_reply(cmds):
     elif cmds[0] == "SET":
         key = cmds[1]
         val = cmds[2]
-        KV_STORE[key] = val
+        with lock:
+            KV_STORE[key] = val
         resp = get_simple_string_reply("OK")
     elif cmds[0] == "GET":
         key = cmds[1]
-        val = KV_STORE.get(key, "nil")
+        with lock:
+            val = KV_STORE.get(key, "nil")
         resp = get_bulk_string_reply(val)
+    elif cmds[0] == "CONFIG":
+        resp = get_empty_array_reply()
     return resp
+
+
+def handle_client(conn, addr, lock):
+    with conn:
+        print('Connected by', addr)
+        while True:
+            data = conn.recv(1024)
+            print(data, type(data))
+            if not data:
+                print("Exiting client")
+                break
+            cmds, _ = parse_command(str(data, encoding='utf-8'))
+            print('commands: ', cmds)
+            reply = construct_reply(cmds, lock)
+            if reply != "":
+                data = bytes(reply, 'utf-8')
+            else:
+                print("Empty reply")
+            conn.sendall(data)
 
 
 def listen():
     HOST = '127.0.0.1'
-    PORT = 50007              # Arbitrary non-privileged port
+    PORT = int(sys.argv[1])              # Arbitrary non-privileged port
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((HOST, PORT))
         s.listen(1)
-        conn, addr = s.accept()
-        with conn:
-            print('Connected by', addr)
-            while True:
-                data = conn.recv(1024)
-                print(data, type(data))
-                if not data:
-                    break
-                cmds, _ = parse_command(str(data, encoding='utf-8'))
-                print('commands: ', cmds)
-                reply = construct_reply(cmds)
-                if reply != "":
-                    data = bytes(reply, 'utf-8')
-                conn.sendall(data)
+        while True:
+            conn, addr = s.accept()
+            lock = threading.Lock()
+            thread = threading.Thread(target=handle_client, args=(conn,addr,lock))
+            thread.start()
+            print("number of threads: ", threading.active_count() - 1)
 
 
 if __name__ == "__main__":
