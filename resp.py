@@ -1,6 +1,7 @@
 import asyncio
 import sys
-import threading
+import time
+from types import SimpleNamespace
 # Redis Serialization Protocol - RESP
 # https://redis.io/docs/reference/protocol-spec/
 # - Simple to implement, fast to parse, human readable
@@ -28,23 +29,17 @@ def parse_command(cmd):
     offset += pos
     if cmd_type == '*':
         count = int(value)
-        #print(count, pos)
         for _ in range(count):
             value, rel_offset = parse_command(cmd[offset:])
             values.append(value[0])
             offset += rel_offset
-        #print(values)
     elif cmd_type == "$":
         length = int(value)
-        #print(length)
         value = cmd[offset:offset+length]
         values.append(value)
         offset += length + LEN_CRLF
-        #print(value)
-        #print(offset)
     elif cmd_type == '+' or cmd_type == ':' or cmd_type == '-':
         values.append(value)
-        #print(value)
 
     return (values, offset)
 
@@ -64,7 +59,7 @@ def get_empty_array_reply():
 KV_STORE = {}
 
 
-def construct_reply(cmds, lock):
+async def construct_reply(cmds, lock):
     resp = ""
     if cmds[0] == "PING":
         if len(cmds) == 1:
@@ -74,14 +69,17 @@ def construct_reply(cmds, lock):
     elif cmds[0] == "SET":
         key = cmds[1]
         val = cmds[2]
-        with lock:
-            KV_STORE[key] = val
+        sn = SimpleNamespace(val=val, expiry=-1)
+        if len(cmds) > 3:
+            sn.expiry = int(cmds[4]) + time.time()
+        async with lock:
+            KV_STORE[key] = sn
         resp = get_simple_string_reply("OK")
     elif cmds[0] == "GET":
         key = cmds[1]
-        with lock:
-            val = KV_STORE.get(key, "nil")
-        resp = get_bulk_string_reply(val)
+        async with lock:
+            sn = KV_STORE.get(key, "nil")
+        resp = get_bulk_string_reply(sn.val if sn != "nil" else "nil")
     elif cmds[0] == "CONFIG":
         resp = get_empty_array_reply()
     return resp
@@ -92,8 +90,8 @@ async def handle_client(reader, writer, lock):
         data = await reader.read(100)
         message = data.decode()
         cmds, _ = parse_command(message)
-        # print('commands: ', cmds)
-        reply = construct_reply(cmds, lock)
+        print('commands: ', cmds)
+        reply = await construct_reply(cmds, lock)
         if reply != "":
             data = bytes(reply, 'utf-8')
         else:
@@ -102,14 +100,33 @@ async def handle_client(reader, writer, lock):
         await writer.drain()
 
 
-async def listen():
+async def check_key_expiry(interval, lock):
+    async def check(lock):
+        async with lock:
+            cur_time = time.time()
+            for k in list(KV_STORE):
+                v = KV_STORE[k]
+                if v.expiry != -1 and v.expiry <= cur_time:
+                    KV_STORE.pop(k)
+    while True:
+        await asyncio.gather(
+            asyncio.sleep(interval),
+            check(lock),
+        )
+
+
+async def listen(lock):
     HOST = '127.0.0.1'
     PORT = int(sys.argv[1])              # Arbitrary non-privileged port
-    lock = threading.Lock()
     server = await asyncio.start_server(
             lambda r, w: handle_client(r, w, lock), HOST, PORT)
     async with server:
         await server.serve_forever()
+
+
+async def main():
+    lock = asyncio.Lock()
+    await asyncio.gather(listen(lock), check_key_expiry(1, lock))
 
 
 if __name__ == "__main__":
@@ -119,4 +136,4 @@ if __name__ == "__main__":
     # parse_command("*2\r\n$4\r\necho\r\n$5\r\nhello\r\n")
     # parse_command("*3\r\n:1\r\n:2\r\n:3\r\n")
     # parse_command("$5\r\nworld\r\n")
-    asyncio.run(listen())
+    asyncio.run(main())
