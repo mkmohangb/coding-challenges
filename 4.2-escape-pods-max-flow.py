@@ -1,4 +1,5 @@
 def solution(entrances, exits, path):
+    # Ref: https://www.geeksforgeeks.org/ford-fulkerson-algorithm-for-maximum-flow-problem/
     class Graph:
      
         def __init__(self, graph):
@@ -55,6 +56,7 @@ def solution(entrances, exits, path):
     source = entrances[0]
     sink = exits[0]
     if len(exits) > 1 or len(entrances) > 1:
+        # Ref: http://www.ifp.illinois.edu/~angelia/ge330fall09_maxflowl20.pdf
         n = len(path)
         source = n
         sink = n+1
